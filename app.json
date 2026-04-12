@@ -1,0 +1,70 @@
+{
+  "expo": {
+    "name": "Spenduel",
+    "slug": "spenduel",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "spenduel",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.spenduel.app",
+      "infoPlist": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": ["kakao592caa7230c72976c825b995859653a2"]
+          }
+        ],
+        "KAKAO_APP_KEY": "592caa7230c72976c825b995859653a2",
+        "LSApplicationQueriesSchemes": ["kakaokompassauth", "storykompassauth", "kakaolink"]
+      }
+    },
+    "android": {
+      "package": "com.spenduel.app",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "spenduel"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "color": "#6C5CE7"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "소비 영수증 사진 업로드를 위해 사진 접근 권한이 필요합니다.",
+          "cameraPermission": "영수증 촬영을 위해 카메라 접근 권한이 필요합니다."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "your-eas-project-id"
+      }
+    }
+  }
+}
