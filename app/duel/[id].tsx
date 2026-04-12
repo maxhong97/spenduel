@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,33 +10,74 @@ import {
   TextInput,
   ActivityIndicator,
   RefreshControl,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useNavigation } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useLayoutEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useDuel } from '@/hooks/useDuel';
 import { useRealtimeScores, useRealtimeDisputes } from '@/hooks/useRealtime';
-import { recordResistTemptation, createDispute, uploadEvidence } from '@/lib/api';
+import {
+  recordResistTemptation,
+  createDispute,
+  resolveDispute,
+  acceptDuel,
+  rejectDuel,
+  getMyPendingDisputes,
+} from '@/lib/api';
+import { sendLocalNotification } from '@/lib/notifications';
 import { ScoreBoard } from '@/components/ScoreBoard';
 import { ActivityFeed } from '@/components/ActivityFeed';
 import { SpendingModal } from '@/components/SpendingModal';
-import { CATEGORY_LABELS, CATEGORY_EMOJIS } from '@/types';
+import { CATEGORY_LABELS, CATEGORY_EMOJIS, EVENT_LABELS, EventType, Dispute } from '@/types';
 
 export default function DuelDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { user } = useAuth();
   const navigation = useNavigation();
+  const router = useRouter();
 
   const { duel, events, scores, loading, error, refresh } = useDuel(id);
-  useRealtimeScores(id, refresh);
-  useRealtimeDisputes(id, refresh);
 
   const [spendingVisible, setSpendingVisible] = useState(false);
   const [disputeVisible, setDisputeVisible] = useState(false);
   const [disputeText, setDisputeText] = useState('');
   const [disputeLoading, setDisputeLoading] = useState(false);
   const [resistLoading, setResistLoading] = useState(false);
+  const [acceptLoading, setAcceptLoading] = useState(false);
+  const [myPendingDisputes, setMyPendingDisputes] = useState<Dispute[]>([]);
+  const [resolvingDisputeId, setResolvingDisputeId] = useState<string | null>(null);
+
+  // score_events 실시간 구독 - 상대 활동 시 로컬 알림
+  useRealtimeScores(id, useCallback((payload?: any) => {
+    if (payload?.new?.user_id && user && payload.new.user_id !== user.id) {
+      const eventType = payload.new.event_type as EventType;
+      const label = EVENT_LABELS[eventType] ?? '활동';
+      sendLocalNotification('상대방 활동 🔔', `상대방이 ${label}을 기록했습니다.`);
+    }
+    refresh();
+  }, [user, refresh]));
+
+  // disputes 실시간 구독
+  useRealtimeDisputes(id, useCallback(() => {
+    refresh();
+    fetchMyDisputes();
+  }, [refresh]));
+
+  const fetchMyDisputes = useCallback(async () => {
+    if (!user || !id) return;
+    try {
+      const disputes = await getMyPendingDisputes(id, user.id);
+      setMyPendingDisputes(disputes);
+    } catch {
+      // 조용히 실패
+    }
+  }, [user, id]);
+
+  useEffect(() => {
+    fetchMyDisputes();
+  }, [fetchMyDisputes]);
 
   useLayoutEffect(() => {
     if (duel) {
@@ -48,6 +89,47 @@ export default function DuelDetailScreen() {
       });
     }
   }, [duel, navigation]);
+
+  // ── 수락/거절 ──────────────────────────────────────────────────────────────
+
+  const handleAccept = async () => {
+    if (!user || !duel) return;
+    setAcceptLoading(true);
+    try {
+      await acceptDuel(duel.id, user.id);
+      await refresh();
+      Alert.alert('대결 시작! 🔥', '대결이 시작되었습니다. 절제력을 보여주세요!');
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setAcceptLoading(false);
+    }
+  };
+
+  const handleReject = () => {
+    if (!duel) return;
+    Alert.alert(
+      '대결 거절',
+      '대결 신청을 거절하시겠어요?',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '거절',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await rejectDuel(duel.id);
+              router.replace('/(tabs)');
+            } catch (e: any) {
+              Alert.alert('오류', e.message);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // ── 유혹 참기 ──────────────────────────────────────────────────────────────
 
   const handleResistTemptation = async () => {
     if (!user || !duel) return;
@@ -62,6 +144,8 @@ export default function DuelDetailScreen() {
       setResistLoading(false);
     }
   };
+
+  // ── 이의 제기 (신고) ────────────────────────────────────────────────────────
 
   const handleDispute = async () => {
     if (!user || !duel || !disputeText.trim()) return;
@@ -78,13 +162,76 @@ export default function DuelDetailScreen() {
       });
       setDisputeVisible(false);
       setDisputeText('');
-      Alert.alert('신고 완료', '상대방에게 24시간 내 이의제기가 전달됩니다.');
+      Alert.alert('신고 완료', '상대방이 인정하면 점수가 조정됩니다.\n상대방이 24시간 내 응답하지 않으면 자동 기각됩니다.');
     } catch (e: any) {
       Alert.alert('오류', e.message);
     } finally {
       setDisputeLoading(false);
     }
   };
+
+  // ── 분쟁 응답 (피신고자) ──────────────────────────────────────────────────
+
+  const handleResolveDispute = async (dispute: Dispute, accept: boolean) => {
+    if (!user || !duel) return;
+    setResolvingDisputeId(dispute.id);
+    try {
+      await resolveDispute(
+        dispute.id,
+        accept ? 'accepted' : 'rejected',
+        duel.id,
+        dispute.reporter_id,
+        user.id
+      );
+      await fetchMyDisputes();
+      await refresh();
+      if (accept) {
+        Alert.alert('인정 완료', '이의 제기를 인정했습니다. 점수가 조정됩니다.');
+      } else {
+        Alert.alert('거부 완료', '이의 제기를 거부했습니다.');
+      }
+    } catch (e: any) {
+      Alert.alert('오류', e.message);
+    } finally {
+      setResolvingDisputeId(null);
+    }
+  };
+
+  // ── 결과 공유 ──────────────────────────────────────────────────────────────
+
+  const handleShareResult = async () => {
+    if (!duel || !user) return;
+    const myScore = scores[user.id] ?? 0;
+    const opponentId = duel.creator_id === user.id ? duel.opponent_id : duel.creator_id;
+    const opponentScore = opponentId ? (scores[opponentId] ?? 0) : 0;
+    const opponent = duel.creator_id === user.id ? duel.opponent : duel.creator;
+    const isWinner = duel.winner_id === user.id;
+
+    const categoryLabel = duel.category === 'custom' && duel.custom_category_name
+      ? duel.custom_category_name
+      : CATEGORY_LABELS[duel.category];
+
+    const text = [
+      `⚔️ 스펜듀얼 ${duel.period_days}일 대결 결과`,
+      ``,
+      `카테고리: ${CATEGORY_EMOJIS[duel.category]} ${categoryLabel}`,
+      ``,
+      `${isWinner ? '🏆' : '😢'} ${user.nickname} ${myScore > 0 ? '+' : ''}${myScore}점`,
+      `${isWinner ? '😢' : '🏆'} ${opponent?.nickname ?? '상대방'} ${opponentScore > 0 ? '+' : ''}${opponentScore}점`,
+      ``,
+      `내기: ${duel.stake_text}`,
+      ``,
+      `#스펜듀얼 #소비절제 #친구대결`,
+    ].join('\n');
+
+    try {
+      await Share.share({ message: text });
+    } catch {
+      // 사용자가 취소한 경우 무시
+    }
+  };
+
+  // ── 렌더링 ─────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -106,11 +253,17 @@ export default function DuelDetailScreen() {
   }
 
   const isActive = duel.status === 'active';
+  const isPending = duel.status === 'pending';
+  const isFinished = duel.status === 'finished';
   const isMyDuel = duel.creator_id === user?.id || duel.opponent_id === user?.id;
+  const amIOpponent = duel.opponent_id === user?.id;
+  const amICreator = duel.creator_id === user?.id;
   const myScore = user ? (scores[user.id] ?? 0) : 0;
-  const opponentId = duel.creator_id === user?.id ? duel.opponent_id : duel.creator_id;
+  const opponentId = amICreator ? duel.opponent_id : duel.creator_id;
   const opponentScore = opponentId ? (scores[opponentId] ?? 0) : 0;
   const isLeading = myScore >= opponentScore;
+  const isWinner = duel.winner_id === user?.id;
+  const isDraw = isFinished && duel.winner_id === null;
 
   const formatEndsAt = () => {
     if (!duel.ends_at) return '';
@@ -129,22 +282,73 @@ export default function DuelDetailScreen() {
           <RefreshControl refreshing={loading} onRefresh={refresh} tintColor="#6C5CE7" />
         }
       >
-        {/* Status Banner */}
-        {duel.status === 'pending' && (
+        {/* ── 수락 대기 배너 (내가 만든 대결) ── */}
+        {isPending && amICreator && (
           <View style={styles.pendingBanner}>
-            <Text style={styles.pendingText}>⏳ 상대방의 수락을 기다리는 중...</Text>
+            <Text style={styles.pendingText}>⏳ {duel.opponent?.nickname ?? '상대방'}님의 수락을 기다리는 중...</Text>
           </View>
         )}
 
-        {duel.status === 'finished' && (
-          <View style={[styles.pendingBanner, styles.finishedBanner]}>
-            <Text style={styles.pendingText}>
-              {duel.winner_id === user?.id ? '🏆 대결 승리!' : '😢 아쉽게 패배...'}
+        {/* ── 수락/거절 배너 (상대가 나에게 신청) ── */}
+        {isPending && amIOpponent && (
+          <View style={styles.inviteBanner}>
+            <Text style={styles.inviteBannerTitle}>
+              ⚔️ {duel.creator?.nickname ?? '상대방'}님이 대결을 신청했습니다!
             </Text>
+            <Text style={styles.inviteBannerStake}>내기: {duel.stake_text}</Text>
+            <View style={styles.inviteActions}>
+              <TouchableOpacity style={styles.inviteRejectBtn} onPress={handleReject}>
+                <Text style={styles.inviteRejectText}>거절</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.inviteAcceptBtn, acceptLoading && styles.disabledButton]}
+                onPress={handleAccept}
+                disabled={acceptLoading}
+              >
+                {acceptLoading ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.inviteAcceptText}>수락하기 🔥</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         )}
 
-        {/* Stake Info */}
+        {/* ── 종료 결과 카드 ── */}
+        {isFinished && (
+          <View style={[styles.resultCard, isWinner ? styles.resultCardWin : isDraw ? styles.resultCardDraw : styles.resultCardLose]}>
+            <Text style={styles.resultEmoji}>
+              {isDraw ? '🤝' : isWinner ? '🏆' : '😢'}
+            </Text>
+            <Text style={styles.resultTitle}>
+              {isDraw ? '동점! 무승부' : isWinner ? '대결 승리!' : '아쉽게 패배'}
+            </Text>
+            <Text style={styles.resultScore}>
+              내 점수: {myScore > 0 ? '+' : ''}{myScore}점 vs 상대: {opponentScore > 0 ? '+' : ''}{opponentScore}점
+            </Text>
+
+            {/* 내기 문구 강조 */}
+            <View style={styles.resultStakeBox}>
+              <Text style={styles.resultStakeLabel}>약속</Text>
+              <Text style={styles.resultStakeText}>{duel.stake_text}</Text>
+            </View>
+
+            {!isDraw && (
+              <Text style={styles.resultHint}>
+                {isWinner
+                  ? '상대방에게 약속 이행을 요청하세요!'
+                  : '약속을 지키고 다음엔 꼭 이겨보세요!'}
+              </Text>
+            )}
+
+            <TouchableOpacity style={styles.shareButton} onPress={handleShareResult}>
+              <Text style={styles.shareButtonText}>결과 공유하기 📤</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ── 내기 문구 바 ── */}
         <View style={styles.stakeBar}>
           <Text style={styles.stakeBarLabel}>내기</Text>
           <Text style={styles.stakeBarText}>{duel.stake_text}</Text>
@@ -153,7 +357,7 @@ export default function DuelDetailScreen() {
           )}
         </View>
 
-        {/* Score Board */}
+        {/* ── 점수판 ── */}
         {duel.creator && (
           <ScoreBoard
             creator={duel.creator}
@@ -163,7 +367,7 @@ export default function DuelDetailScreen() {
           />
         )}
 
-        {/* My Score Highlight */}
+        {/* ── 내 점수 상태 (진행 중일 때) ── */}
         {isActive && user && (
           <View style={[styles.myScoreCard, isLeading ? styles.myScoreLeading : styles.myScoreTrailing]}>
             <Text style={styles.myScoreLabel}>내 점수</Text>
@@ -172,7 +376,51 @@ export default function DuelDetailScreen() {
           </View>
         )}
 
-        {/* Action Buttons */}
+        {/* ── 나에게 온 분쟁 알림 ── */}
+        {isActive && myPendingDisputes.length > 0 && (
+          <View style={styles.disputeAlertSection}>
+            <Text style={styles.disputeAlertTitle}>⚠️ 이의 제기 알림</Text>
+            {myPendingDisputes.map((dispute) => (
+              <View key={dispute.id} style={styles.disputeAlertCard}>
+                <Text style={styles.disputeAlertFrom}>
+                  {(dispute as any).reporter?.nickname ?? '상대방'}의 이의 제기
+                </Text>
+                <Text style={styles.disputeAlertDesc}>{dispute.description}</Text>
+                <Text style={styles.disputeAlertNote}>
+                  인정 시: 나 -15점, 상대 +5점 / 거부 시: 점수 변동 없음
+                </Text>
+                <View style={styles.disputeAlertActions}>
+                  <TouchableOpacity
+                    style={[
+                      styles.disputeRejectBtn,
+                      resolvingDisputeId === dispute.id && styles.disabledButton,
+                    ]}
+                    onPress={() => handleResolveDispute(dispute, false)}
+                    disabled={resolvingDisputeId !== null}
+                  >
+                    <Text style={styles.disputeRejectBtnText}>거부하기</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.disputeAcceptBtn,
+                      resolvingDisputeId === dispute.id && styles.disabledButton,
+                    ]}
+                    onPress={() => handleResolveDispute(dispute, true)}
+                    disabled={resolvingDisputeId !== null}
+                  >
+                    {resolvingDisputeId === dispute.id ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.disputeAcceptBtnText}>인정하기</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* ── 액션 버튼 (진행 중) ── */}
         {isActive && isMyDuel && user && (
           <View style={styles.actionsSection}>
             <Text style={styles.sectionTitle}>활동 기록</Text>
@@ -203,14 +451,14 @@ export default function DuelDetailScreen() {
           </View>
         )}
 
-        {/* Activity Feed */}
+        {/* ── 활동 피드 ── */}
         <View style={styles.feedSection}>
           <Text style={styles.sectionTitle}>활동 피드</Text>
           <ActivityFeed events={events} myUserId={user?.id ?? ''} />
         </View>
       </ScrollView>
 
-      {/* Spending Modal */}
+      {/* ── 소비 기록 모달 ── */}
       {user && (
         <SpendingModal
           visible={spendingVisible}
@@ -224,7 +472,7 @@ export default function DuelDetailScreen() {
         />
       )}
 
-      {/* Dispute Modal */}
+      {/* ── 이의 제기 모달 ── */}
       <Modal
         visible={disputeVisible}
         animationType="slide"
@@ -237,7 +485,7 @@ export default function DuelDetailScreen() {
             <Text style={styles.modalTitle}>이의 제기 🚨</Text>
             <Text style={styles.modalSubtitle}>
               상대방의 부정 행위나 잘못된 기록을 신고해주세요.{'\n'}
-              신고 인정 시 상대방 -15점, 나 +5점이 적용됩니다.
+              상대방이 인정하면 상대 -15점, 나 +5점이 적용됩니다.
             </Text>
             <TextInput
               style={styles.disputeInput}
@@ -249,7 +497,7 @@ export default function DuelDetailScreen() {
               textAlignVertical="top"
             />
             <TouchableOpacity
-              style={[styles.disputeSubmit, disputeLoading && styles.disabledButton]}
+              style={[styles.disputeSubmit, (disputeLoading || !disputeText.trim()) && styles.disabledButton]}
               onPress={handleDispute}
               disabled={disputeLoading || !disputeText.trim()}
             >
@@ -325,20 +573,143 @@ const styles = StyleSheet.create({
     color: '#6C5CE7',
     fontWeight: '600',
   },
+
+  // Pending banners
   pendingBanner: {
     backgroundColor: '#FDCB6E',
     paddingVertical: 10,
     paddingHorizontal: 20,
     alignItems: 'center',
   },
-  finishedBanner: {
-    backgroundColor: '#6C5CE7',
-  },
   pendingText: {
     fontSize: 13,
     fontWeight: '600',
     color: '#fff',
   },
+  inviteBanner: {
+    backgroundColor: '#2D3436',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    gap: 10,
+  },
+  inviteBannerTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  inviteBannerStake: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.75)',
+  },
+  inviteActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  inviteRejectBtn: {
+    flex: 0.35,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  inviteRejectText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.7)',
+  },
+  inviteAcceptBtn: {
+    flex: 1,
+    backgroundColor: '#6C5CE7',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  inviteAcceptText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  disabledButton: {
+    opacity: 0.5,
+  },
+
+  // Result card
+  resultCard: {
+    margin: 16,
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    gap: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  resultCardWin: {
+    backgroundColor: '#6C5CE7',
+  },
+  resultCardLose: {
+    backgroundColor: '#636E72',
+  },
+  resultCardDraw: {
+    backgroundColor: '#00B894',
+  },
+  resultEmoji: {
+    fontSize: 56,
+  },
+  resultTitle: {
+    fontSize: 24,
+    fontWeight: '900',
+    color: '#fff',
+  },
+  resultScore: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.8)',
+  },
+  resultStakeBox: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+    width: '100%',
+    marginTop: 4,
+  },
+  resultStakeLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.6)',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  resultStakeText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    textAlign: 'center',
+  },
+  resultHint: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.75)',
+    textAlign: 'center',
+  },
+  shareButton: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    borderRadius: 12,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    marginTop: 4,
+  },
+  shareButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+  },
+
+  // Stake bar
   stakeBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -369,6 +740,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#6C5CE7',
   },
+
+  // My score highlight
   myScoreCard: {
     marginHorizontal: 16,
     marginTop: -8,
@@ -401,6 +774,72 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#636E72',
   },
+
+  // Dispute alert (내게 온 분쟁)
+  disputeAlertSection: {
+    paddingHorizontal: 16,
+    marginBottom: 8,
+    gap: 8,
+  },
+  disputeAlertTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#E17055',
+  },
+  disputeAlertCard: {
+    backgroundColor: '#FFF5F0',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: '#E17055',
+    gap: 8,
+  },
+  disputeAlertFrom: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#2D3436',
+  },
+  disputeAlertDesc: {
+    fontSize: 13,
+    color: '#636E72',
+    lineHeight: 18,
+  },
+  disputeAlertNote: {
+    fontSize: 11,
+    color: '#B2BEC3',
+  },
+  disputeAlertActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  disputeRejectBtn: {
+    flex: 0.4,
+    borderWidth: 1.5,
+    borderColor: '#DFE6E9',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  disputeRejectBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#636E72',
+  },
+  disputeAcceptBtn: {
+    flex: 1,
+    backgroundColor: '#E17055',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  disputeAcceptBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+  },
+
+  // Actions
   actionsSection: {
     paddingHorizontal: 16,
     marginTop: 8,
@@ -442,10 +881,13 @@ const styles = StyleSheet.create({
     color: '#B2BEC3',
     textAlign: 'center',
   },
+
+  // Feed
   feedSection: {
     paddingHorizontal: 16,
     paddingBottom: 24,
   },
+
   // Modal
   modalOverlay: {
     flex: 1,
@@ -499,9 +941,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#fff',
-  },
-  disabledButton: {
-    opacity: 0.4,
   },
   modalCancel: {
     paddingVertical: 10,

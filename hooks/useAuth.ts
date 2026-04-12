@@ -51,30 +51,27 @@ export function useAuth() {
 
   const signInWithKakao = useCallback(async () => {
     try {
-      // React Native용 카카오 SDK (네이티브 빌드 필요)
-      const KakaoLogin = require('@react-native-seoul/kakao-login');
-      await KakaoLogin.login();
-      const profile = await KakaoLogin.getProfile();
-
-      // MVP: signInAnonymously로 Supabase 세션 발급
-      // 프로덕션에서는 Edge Function으로 커스텀 JWT 교환 권장
+      // ── 데모 모드: 카카오 SDK 없이 익명 로그인 ──────────────────────────
+      // 네이티브 빌드(방법 B) 전환 시 아래 블록을 실제 Kakao SDK 코드로 교체
       const { data: authData, error: authError } = await supabase.auth.signInAnonymously();
       if (authError) throw authError;
 
       const authId = authData.user!.id;
+      // 기기별 고정 닉네임: 재로그인해도 같은 계정으로 인식
+      const demoKakaoId = `demo_${authId.slice(0, 8)}`;
+      const demoNickname = `테스트_${authId.slice(0, 4)}`;
 
-      // users 테이블에 Supabase auth ID를 PK로 upsert
       const supabaseUser = await upsertUser(
         authId,
-        String(profile.id),
-        profile.nickname || '익명',
-        profile.profileImageUrl || undefined
+        demoKakaoId,
+        demoNickname,
+        undefined
       );
       setUser(supabaseUser);
 
       return supabaseUser;
     } catch (error) {
-      console.error('Kakao login error:', error);
+      console.error('Login error:', error);
       throw error;
     }
   }, []);

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getDuel, getDuelScoreEvents, getDuelScores } from '@/lib/api';
+import { getDuel, getDuelScoreEvents, getDuelScores, finishDuel } from '@/lib/api';
 import { Duel, ScoreEvent } from '@/types';
 
 export function useDuel(duelId: string) {
@@ -17,7 +17,16 @@ export function useDuel(duelId: string) {
         getDuelScoreEvents(duelId),
         getDuelScores(duelId),
       ]);
-      setDuel(duelData);
+
+      // ends_at이 지난 active 대결을 클라이언트에서 종료 처리
+      let finalDuel = duelData;
+      if (duelData.status === 'active' && duelData.ends_at) {
+        if (new Date(duelData.ends_at) < new Date()) {
+          finalDuel = await finishDuel(duelData.id, scoresData);
+        }
+      }
+
+      setDuel(finalDuel);
       setEvents(eventsData);
       setScores(scoresData);
     } catch (e: any) {

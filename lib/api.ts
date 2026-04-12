@@ -82,6 +82,7 @@ export async function getDuel(duelId: string) {
 
 export async function createDuel(params: {
   creatorId: string;
+  opponentId: string;
   category: DuelCategory;
   customCategoryName?: string;
   periodDays: 7 | 14 | 30;
@@ -91,6 +92,7 @@ export async function createDuel(params: {
     .from('duels')
     .insert({
       creator_id: params.creatorId,
+      opponent_id: params.opponentId,
       category: params.category,
       custom_category_name: params.customCategoryName ?? null,
       period_days: params.periodDays,
@@ -123,6 +125,60 @@ export async function acceptDuel(duelId: string, opponentId: string) {
 
   if (error) throw error;
   return data as Duel;
+}
+
+export async function rejectDuel(duelId: string) {
+  const { error } = await supabase
+    .from('duels')
+    .delete()
+    .eq('id', duelId)
+    .eq('status', 'pending');
+
+  if (error) throw error;
+}
+
+export async function finishDuel(
+  duelId: string,
+  scores: Record<string, number>
+): Promise<Duel> {
+  const entries = Object.entries(scores);
+  let winnerId: string | null = null;
+  if (entries.length >= 2) {
+    const sorted = entries.sort((a, b) => b[1] - a[1]);
+    if (sorted[0][1] !== sorted[1][1]) winnerId = sorted[0][0];
+    // 동점이면 winnerId = null
+  } else if (entries.length === 1) {
+    winnerId = entries[0][0];
+  }
+
+  const { data, error } = await supabase
+    .from('duels')
+    .update({ status: 'finished', winner_id: winnerId })
+    .eq('id', duelId)
+    .eq('status', 'active')
+    .select()
+    .maybeSingle();
+
+  if (error) throw error;
+
+  // 이미 상대방이 먼저 종료 처리한 경우 현재 상태 반환
+  if (!data) return getDuel(duelId);
+  return data as Duel;
+}
+
+export async function getMyPendingDisputes(
+  duelId: string,
+  userId: string
+): Promise<Dispute[]> {
+  const { data, error } = await supabase
+    .from('disputes')
+    .select('*, reporter:users!disputes_reporter_id_fkey(*)')
+    .eq('duel_id', duelId)
+    .eq('target_user_id', userId)
+    .eq('status', 'pending');
+
+  if (error) throw error;
+  return data as Dispute[];
 }
 
 // ── Score Events ────────────────────────────────────────────────────────────

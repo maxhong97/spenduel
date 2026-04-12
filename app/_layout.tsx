@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuth } from '@/hooks/useAuth';
+import { registerForPushNotifications } from '@/lib/notifications';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -11,6 +12,10 @@ export default function RootLayout() {
   const { session, loading } = useAuth();
   const router = useRouter();
   const segments = useSegments();
+
+  useEffect(() => {
+    registerForPushNotifications();
+  }, []);
 
   useEffect(() => {
     if (loading) return;

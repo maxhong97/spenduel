@@ -5,9 +5,6 @@ import {
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
-  Image,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/hooks/useAuth';
@@ -15,18 +12,17 @@ import { useAuth } from '@/hooks/useAuth';
 export default function LoginScreen() {
   const { signInWithKakao } = useAuth();
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handleKakaoLogin = async () => {
-    if (Platform.OS === 'web') {
-      Alert.alert('알림', '카카오 로그인은 모바일 앱에서 지원됩니다.');
-      return;
-    }
-
     setLoading(true);
+    setErrorMsg(null);
     try {
       await signInWithKakao();
     } catch (error: any) {
-      Alert.alert('로그인 실패', error?.message ?? '다시 시도해주세요.');
+      const msg = error?.message ?? '로그인에 실패했습니다. 다시 시도해주세요.';
+      setErrorMsg(msg);
+      console.error('[Login]', msg);
     } finally {
       setLoading(false);
     }
@@ -68,6 +64,12 @@ export default function LoginScreen() {
             </>
           )}
         </TouchableOpacity>
+
+        {errorMsg && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>⚠️ {errorMsg}</Text>
+          </View>
+        )}
 
         <Text style={styles.disclaimer}>
           로그인 시 서비스 이용약관 및 개인정보처리방침에 동의합니다.
@@ -184,6 +186,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#3C1E1E',
+  },
+  errorBox: {
+    backgroundColor: '#FFF0F0',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E17055',
+  },
+  errorText: {
+    fontSize: 13,
+    color: '#E17055',
+    textAlign: 'center',
+    lineHeight: 18,
   },
   disclaimer: {
     fontSize: 11,

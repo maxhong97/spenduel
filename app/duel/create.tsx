@@ -51,6 +51,7 @@ export default function CreateDuelScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [searching, setSearching] = useState(false);
+  const [selectedOpponent, setSelectedOpponent] = useState<User | null>(null);
   const [creating, setCreating] = useState(false);
 
   const canProceedCategory = category !== null && (category !== 'custom' || customCategory.trim());
@@ -70,13 +71,20 @@ export default function CreateDuelScreen() {
     }
   };
 
+  const handleSelectOpponent = (u: User) => {
+    setSelectedOpponent(u);
+    setSearchResults([]);
+    setSearchQuery('');
+  };
+
   const handleCreate = async () => {
-    if (!user || !category || !period) return;
+    if (!user || !category || !period || !selectedOpponent) return;
 
     setCreating(true);
     try {
       const duel = await createDuel({
         creatorId: user.id,
+        opponentId: selectedOpponent.id,
         category,
         customCategoryName: category === 'custom' ? customCategory.trim() : undefined,
         periodDays: period,
@@ -84,14 +92,12 @@ export default function CreateDuelScreen() {
       });
 
       Alert.alert(
-        '대결 생성 완료! ⚔️',
-        '초대 링크를 친구에게 보내거나\n닉네임으로 친구를 찾아보세요.',
+        '대결 신청 완료! ⚔️',
+        `${selectedOpponent.nickname}님이 수락하면 대결이 시작됩니다.`,
         [
           {
-            text: '대결 보기',
-            onPress: () => {
-              router.replace(`/duel/${duel.id}`);
-            },
+            text: '확인',
+            onPress: () => router.replace(`/duel/${duel.id}`),
           },
         ]
       );
@@ -244,7 +250,7 @@ export default function CreateDuelScreen() {
         {[
           '지는 사람이 커피 사기 ☕',
           '지는 사람이 치킨 쏘기 🍗',
-          '지는 사람이 청소하기 🧹',
+          '지는 사람이 밥 사기 🍚',
         ].map((ex) => (
           <TouchableOpacity
             key={ex}
@@ -287,8 +293,8 @@ export default function CreateDuelScreen() {
 
   const renderInviteStep = () => (
     <View style={styles.stepContent}>
-      <Text style={styles.stepTitle}>친구를 초대해요</Text>
-      <Text style={styles.stepSubtitle}>닉네임으로 친구를 찾거나 나중에 초대할 수 있어요</Text>
+      <Text style={styles.stepTitle}>대결 상대를 선택해요</Text>
+      <Text style={styles.stepSubtitle}>닉네임으로 친구를 찾아 도전장을 보내세요</Text>
 
       {/* Summary */}
       <View style={styles.summaryCard}>
@@ -299,39 +305,77 @@ export default function CreateDuelScreen() {
         <SummaryRow label="내기" value={stakeText} emoji="🏆" />
       </View>
 
-      {/* Friend Search */}
-      <View style={styles.searchRow}>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="친구 닉네임 검색..."
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          returnKeyType="search"
-          onSubmitEditing={handleSearch}
-        />
-        <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
-          {searching ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Text style={styles.searchButtonText}>검색</Text>
-          )}
-        </TouchableOpacity>
-      </View>
-
-      {searchResults.length > 0 && (
-        <View style={styles.searchResults}>
-          {searchResults.map((u) => (
-            <View key={u.id} style={styles.searchResultItem}>
-              <View style={styles.resultAvatar}>
-                <Text style={styles.resultAvatarText}>{u.nickname.charAt(0)}</Text>
-              </View>
-              <Text style={styles.resultNickname}>{u.nickname}</Text>
-              <View style={styles.resultTrust}>
-                <Text style={styles.resultTrustText}>🛡️ {u.trust_score}</Text>
-              </View>
+      {/* Selected Opponent */}
+      {selectedOpponent ? (
+        <View style={styles.selectedOpponentCard}>
+          <View style={styles.selectedOpponentLeft}>
+            <View style={styles.resultAvatar}>
+              <Text style={styles.resultAvatarText}>{selectedOpponent.nickname.charAt(0)}</Text>
             </View>
-          ))}
+            <View>
+              <Text style={styles.selectedOpponentName}>{selectedOpponent.nickname}</Text>
+              <Text style={styles.selectedOpponentSub}>🛡️ 신뢰도 {selectedOpponent.trust_score}</Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            style={styles.changeOpponentButton}
+            onPress={() => setSelectedOpponent(null)}
+          >
+            <Text style={styles.changeOpponentText}>변경</Text>
+          </TouchableOpacity>
         </View>
+      ) : (
+        <>
+          {/* Friend Search */}
+          <View style={styles.searchRow}>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="친구 닉네임 검색..."
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              returnKeyType="search"
+              onSubmitEditing={handleSearch}
+            />
+            <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
+              {searching ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.searchButtonText}>검색</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {searchResults.length > 0 && (
+            <View style={styles.searchResults}>
+              {searchResults.map((u) => (
+                <TouchableOpacity
+                  key={u.id}
+                  style={styles.searchResultItem}
+                  onPress={() => handleSelectOpponent(u)}
+                  activeOpacity={0.75}
+                >
+                  <View style={styles.resultAvatar}>
+                    <Text style={styles.resultAvatarText}>{u.nickname.charAt(0)}</Text>
+                  </View>
+                  <Text style={styles.resultNickname}>{u.nickname}</Text>
+                  <View style={styles.resultTrust}>
+                    <Text style={styles.resultTrustText}>🛡️ {u.trust_score}</Text>
+                  </View>
+                  <Text style={styles.selectHint}>선택 →</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
+          {searchResults.length === 0 && searchQuery === '' && (
+            <View style={styles.searchHint}>
+              <Text style={styles.searchHintText}>
+                ⚠️ 대결 상대를 선택해야 대결을 신청할 수 있어요.{'\n'}
+                친구가 앱에 가입되어 있어야 합니다.
+              </Text>
+            </View>
+          )}
+        </>
       )}
 
       <View style={styles.buttonRow}>
@@ -339,14 +383,17 @@ export default function CreateDuelScreen() {
           <Text style={styles.backButtonText}>이전</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.createButton, creating && styles.nextButtonDisabled]}
+          style={[
+            styles.createButton,
+            (!selectedOpponent || creating) && styles.nextButtonDisabled,
+          ]}
           onPress={handleCreate}
-          disabled={creating}
+          disabled={!selectedOpponent || creating}
         >
           {creating ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.createButtonText}>대결 만들기 ⚔️</Text>
+            <Text style={styles.createButtonText}>도전장 보내기 ⚔️</Text>
           )}
         </TouchableOpacity>
       </View>
@@ -603,6 +650,42 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#2D3436',
   },
+  selectedOpponentCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0EBFF',
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 2,
+    borderColor: '#6C5CE7',
+  },
+  selectedOpponentLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  selectedOpponentName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#2D3436',
+  },
+  selectedOpponentSub: {
+    fontSize: 12,
+    color: '#636E72',
+    marginTop: 2,
+  },
+  changeOpponentButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+  },
+  changeOpponentText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#6C5CE7',
+  },
   searchRow: {
     flexDirection: 'row',
     gap: 10,
@@ -677,6 +760,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#6C5CE7',
+  },
+  selectHint: {
+    fontSize: 12,
+    color: '#B2BEC3',
+    marginLeft: 4,
+  },
+  searchHint: {
+    backgroundColor: '#FFF9E6',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#FDCB6E',
+  },
+  searchHintText: {
+    fontSize: 13,
+    color: '#636E72',
+    lineHeight: 20,
   },
   buttonRow: {
     flexDirection: 'row',
