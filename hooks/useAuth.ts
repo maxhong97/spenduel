@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Platform } from 'react-native';
 import { supabase } from '@/lib/supabase';
 import { upsertUser } from '@/lib/api';
 import { User } from '@/types';
@@ -51,22 +52,27 @@ export function useAuth() {
 
   const signInWithKakao = useCallback(async () => {
     try {
-      // ── 데모 모드: 카카오 SDK 없이 익명 로그인 ──────────────────────────
-      // 네이티브 빌드(방법 B) 전환 시 아래 블록을 실제 Kakao SDK 코드로 교체
-      const { data: authData, error: authError } = await supabase.auth.signInAnonymously();
+      if (Platform.OS === 'web') {
+        throw new Error('카카오 로그인은 모바일 앱에서만 지원됩니다.');
+      }
+
+      const { login } = await import('@react-native-seoul/kakao-login');
+      const kakaoToken = await login();
+
+      // Supabase에 카카오 ID 토큰으로 로그인
+      const { data: authData, error: authError } = await supabase.auth.signInWithIdToken({
+        provider: 'kakao',
+        token: kakaoToken.idToken,
+        access_token: kakaoToken.accessToken,
+      });
       if (authError) throw authError;
 
       const authId = authData.user!.id;
-      // 기기별 고정 닉네임: 재로그인해도 같은 계정으로 인식
-      const demoKakaoId = `demo_${authId.slice(0, 8)}`;
-      const demoNickname = `테스트_${authId.slice(0, 4)}`;
+      const kakaoId = String(authData.user!.user_metadata?.provider_id ?? authId);
+      const nickname = authData.user!.user_metadata?.name ?? `사용자_${authId.slice(0, 4)}`;
+      const avatarUrl = authData.user!.user_metadata?.avatar_url;
 
-      const supabaseUser = await upsertUser(
-        authId,
-        demoKakaoId,
-        demoNickname,
-        undefined
-      );
+      const supabaseUser = await upsertUser(authId, kakaoId, nickname, avatarUrl);
       setUser(supabaseUser);
 
       return supabaseUser;
